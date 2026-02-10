@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from utils import format_ml_signal, send_telegram_message
+from storage import save_signal
 
 app = Flask(__name__)
 
