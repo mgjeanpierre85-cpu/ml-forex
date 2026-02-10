@@ -48,6 +48,18 @@ def predict():
             time_str=time_str,
         )
 
+        # ⭐⭐⭐ AQUI SE GUARDA LA SEÑAL EN EL CSV ⭐⭐⭐
+        save_signal(
+            ticker=ticker,
+            prediction=model_prediction,
+            open_price=open_price,
+            sl=sl,
+            tp=tp,
+            timeframe=timeframe,
+            signal_time=time_str
+        )
+        # ⭐⭐⭐ FIN DEL GUARDADO ⭐⭐⭐
+
         ok, resp = send_telegram_message(msg)
 
         if not ok:
