@@ -71,5 +71,17 @@ def predict():
         return jsonify({"status": "error", "detail": str(e)}), 400
 
 
+# ⭐⭐⭐ ENDPOINT PARA VER EL CSV ⭐⭐⭐
+@app.route("/debug-csv", methods=["GET"])
+def debug_csv():
+    try:
+        with open("signals.csv", "r", encoding="utf-8") as f:
+            content = f.read()
+        return f"<pre>{content}</pre>", 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+# ⭐⭐⭐ FIN DEL ENDPOINT ⭐⭐⭐
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
