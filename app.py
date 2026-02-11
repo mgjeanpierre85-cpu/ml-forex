@@ -1,8 +1,11 @@
 from flask import Flask, request, jsonify
 from utils import format_ml_signal, send_telegram_message
-from storage import save_signal
+from storage import save_signal, save_signal_db, init_db
 
 app = Flask(__name__)
+
+# Inicializa la base de datos al arrancar la app
+init_db()
 
 
 @app.route("/", methods=["GET"])
@@ -48,7 +51,7 @@ def predict():
             time_str=time_str,
         )
 
-        # ⭐⭐⭐ AQUI SE GUARDA LA SEÑAL EN EL CSV ⭐⭐⭐
+        # Guardado en CSV (respaldo)
         save_signal(
             ticker=ticker,
             prediction=model_prediction,
@@ -58,7 +61,17 @@ def predict():
             timeframe=timeframe,
             signal_time=time_str
         )
-        # ⭐⭐⭐ FIN DEL GUARDADO ⭐⭐⭐
+
+        # Guardado en PostgreSQL
+        save_signal_db(
+            ticker=ticker,
+            prediction=model_prediction,
+            open_price=open_price,
+            sl=sl,
+            tp=tp,
+            timeframe=timeframe,
+            signal_time=time_str
+        )
 
         ok, resp = send_telegram_message(msg)
 
@@ -71,7 +84,6 @@ def predict():
         return jsonify({"status": "error", "detail": str(e)}), 400
 
 
-# ⭐⭐⭐ ENDPOINT PARA VER EL CSV ⭐⭐⭐
 @app.route("/debug-csv", methods=["GET"])
 def debug_csv():
     try:
@@ -80,7 +92,6 @@ def debug_csv():
         return f"<pre>{content}</pre>", 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-# ⭐⭐⭐ FIN DEL ENDPOINT ⭐⭐⭐
 
 
 if __name__ == "__main__":
