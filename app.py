@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from utils import format_ml_signal, send_telegram_message
 from storage import save_signal, save_signal_db, init_db
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -39,8 +40,11 @@ def predict():
         sl = float(data.get("sl"))
         tp = float(data.get("tp"))
         timeframe = int(data.get("timeframe"))
-        time_str = str(data.get("time"))
 
+        # FIX CRÍTICO: si TradingView no envía "time", generamos uno
+        time_str = str(data.get("time")) or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Formato del mensaje para Telegram
         msg = format_ml_signal(
             ticker=ticker,
             model_prediction=model_prediction,
@@ -73,6 +77,7 @@ def predict():
             signal_time=time_str
         )
 
+        # Envío a Telegram
         ok, resp = send_telegram_message(msg)
 
         if not ok:
