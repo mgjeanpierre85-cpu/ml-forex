@@ -20,24 +20,11 @@ def predict():
     print("Raw body received:", raw_body)
     print("Content-Type received:", content_type)
 
-    # Si llega solo "BUY" o "SELL" (texto plano de TradingView)
-    if raw_body in ["BUY", "SELL"]:
-        print("Body simple detectado: creando JSON manual")
-        data = {
-            "ticker": "BTCUSD",  # temporal, después lo sacamos de otro lado o de query si TV lo envía
-            "prediction": raw_body,
-            "open_price": 0.0,   # temporal
-            "sl": 0.0,
-            "tp": 0.0,
-            "timeframe": 1,
-            "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        }
-    else:
-        # Si llega JSON real (como en Postman), parsearlo
-        data = request.get_json(silent=True)
-        if not data:
-            print("Error: No se pudo parsear JSON (data is None)")
-            return jsonify({"error": "JSON inválido o vacío"}), 400
+    # Parsear JSON directamente
+    data = request.get_json(silent=True)
+    if not data:
+        print("Error: No se pudo parsear JSON (data is None)")
+        return jsonify({"error": "JSON inválido o vacío"}), 400
 
     try:
         ticker = str(data.get("ticker", "UNKNOWN"))
@@ -45,7 +32,7 @@ def predict():
         open_price = float(data.get("open_price", 0.0))
         sl = float(data.get("sl", 0.0))
         tp = float(data.get("tp", 0.0))
-        timeframe = int(data.get("timeframe", 1))
+        timeframe = str(data.get("timeframe", "UNKNOWN"))
         time_str = str(data.get("time")) or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
         msg = format_ml_signal(
