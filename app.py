@@ -14,38 +14,40 @@ def health():
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """
-    Espera un JSON desde TradingView con algo como:
-    {
-        "ticker": "EURUSD",
-        "prediction": "BUY",
-        "open_price": 1.0850,
-        "sl": 1.0820,
-        "tp": 1.0880,
-        "timeframe": 15,
-        "time": "2026-02-10 16:00:00"
-    }
-    """
-    # DEBUG: Imprimir el body crudo que llega (para ver qué envía TradingView)
-    print("Raw body received:", request.data.decode('utf-8', errors='ignore'))
-    print("Content-Type received:", request.headers.get('Content-Type'))
+    # DEBUG: Imprimir lo que llega exactamente
+    raw_body = request.data.decode('utf-8', errors='ignore').strip()
+    content_type = request.headers.get('Content-Type')
+    print("Raw body received:", raw_body)
+    print("Content-Type received:", content_type)
 
-    data = request.get_json(silent=True)
-    if not data:
-        print("Error: No se pudo parsear JSON (data is None)")
-        return jsonify({"error": "JSON inválido o vacío"}), 400
+    # Si llega solo "BUY" o "SELL" (texto plano de TradingView)
+    if raw_body in ["BUY", "SELL"]:
+        print("Body simple detectado: creando JSON manual")
+        data = {
+            "ticker": "BTCUSD",  # temporal, después lo sacamos de otro lado o de query si TV lo envía
+            "prediction": raw_body,
+            "open_price": 0.0,   # temporal
+            "sl": 0.0,
+            "tp": 0.0,
+            "timeframe": 1,
+            "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    else:
+        # Si llega JSON real (como en Postman), parsearlo
+        data = request.get_json(silent=True)
+        if not data:
+            print("Error: No se pudo parsear JSON (data is None)")
+            return jsonify({"error": "JSON inválido o vacío"}), 400
 
     try:
         ticker = str(data.get("ticker", "UNKNOWN"))
         model_prediction = str(data.get("prediction", "BUY")).upper()
-        open_price = float(data.get("open_price"))
-        sl = float(data.get("sl"))
-        tp = float(data.get("tp"))
-        timeframe = int(data.get("timeframe"))
-        # FIX CRÍTICO: si TradingView no envía "time", generamos uno
+        open_price = float(data.get("open_price", 0.0))
+        sl = float(data.get("sl", 0.0))
+        tp = float(data.get("tp", 0.0))
+        timeframe = int(data.get("timeframe", 1))
         time_str = str(data.get("time")) or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Formato del mensaje para Telegram
         msg = format_ml_signal(
             ticker=ticker,
             model_prediction=model_prediction,
@@ -56,7 +58,6 @@ def predict():
             time_str=time_str,
         )
 
-        # Guardado en CSV (respaldo)
         save_signal(
             ticker=ticker,
             prediction=model_prediction,
@@ -67,7 +68,6 @@ def predict():
             signal_time=time_str
         )
 
-        # Guardado en PostgreSQL
         save_signal_db(
             ticker=ticker,
             prediction=model_prediction,
@@ -78,7 +78,6 @@ def predict():
             signal_time=time_str
         )
 
-        # Envío a Telegram
         ok, resp = send_telegram_message(msg)
         if not ok:
             print("Error al enviar a Telegram:", resp)
