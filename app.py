@@ -8,11 +8,9 @@ app = Flask(__name__)
 # Inicializa la base de datos al arrancar la app
 init_db()
 
-
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "message": "ml-forex server running"}), 200
-
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -28,9 +26,13 @@ def predict():
         "time": "2026-02-10 16:00:00"
     }
     """
-    data = request.get_json(silent=True)
+    # DEBUG: Imprimir el body crudo que llega (para ver qué envía TradingView)
+    print("Raw body received:", request.data.decode('utf-8', errors='ignore'))
+    print("Content-Type received:", request.headers.get('Content-Type'))
 
+    data = request.get_json(silent=True)
     if not data:
+        print("Error: No se pudo parsear JSON (data is None)")
         return jsonify({"error": "JSON inválido o vacío"}), 400
 
     try:
@@ -40,7 +42,6 @@ def predict():
         sl = float(data.get("sl"))
         tp = float(data.get("tp"))
         timeframe = int(data.get("timeframe"))
-
         # FIX CRÍTICO: si TradingView no envía "time", generamos uno
         time_str = str(data.get("time")) or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -79,15 +80,15 @@ def predict():
 
         # Envío a Telegram
         ok, resp = send_telegram_message(msg)
-
         if not ok:
+            print("Error al enviar a Telegram:", resp)
             return jsonify({"status": "error", "detail": resp}), 500
 
         return jsonify({"status": "ok", "message": "Signal sent to Telegram"}), 200
 
     except Exception as e:
+        print("Exception in /predict:", str(e))
         return jsonify({"status": "error", "detail": str(e)}), 400
-
 
 @app.route("/debug-csv", methods=["GET"])
 def debug_csv():
@@ -97,7 +98,6 @@ def debug_csv():
         return f"<pre>{content}</pre>", 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
