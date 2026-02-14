@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify
 from utils import format_ml_signal, send_telegram_message
 from storage import save_signal, save_signal_db, init_db
@@ -14,27 +15,43 @@ def health():
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    # DEBUG: Imprimir lo que llega exactamente
+    # DEBUG: Imprimir lo que llega exactamente para monitoreo en Render
     raw_body = request.data.decode('utf-8', errors='ignore').strip()
     content_type = request.headers.get('Content-Type')
-    print("Raw body received:", raw_body)
-    print("Content-Type received:", content_type)
+    
+    print(f"--- Nueva Petición Recibida ---")
+    print(f"Raw body received: {raw_body}")
+    print(f"Content-Type received: {content_type}")
 
-    # Parsear JSON directamente
+    # Intentar parsear JSON independientemente del Content-Type enviado por TV
     data = request.get_json(silent=True)
+    
+    # Si get_json falla (a veces por Content-Type text/plain), forzamos parseo manual
+    if not data and raw_body:
+        import json
+        try:
+            data = json.loads(raw_body)
+        except Exception as e:
+            print(f"Error parseando JSON manualmente: {e}")
+
     if not data:
-        print("Error: No se pudo parsear JSON (data is None)")
+        print("Error: No se pudo parsear JSON (data is None o está vacío)")
         return jsonify({"error": "JSON inválido o vacío"}), 400
 
     try:
+        # Extraer datos con valores por defecto
         ticker = str(data.get("ticker", "UNKNOWN"))
         model_prediction = str(data.get("prediction", "BUY")).upper()
         open_price = float(data.get("open_price", 0.0))
         sl = float(data.get("sl", 0.0))
         tp = float(data.get("tp", 0.0))
         timeframe = str(data.get("timeframe", "UNKNOWN"))
-        time_str = str(data.get("time")) or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Manejo de tiempo: usar el del JSON o el actual del servidor
+        time_received = data.get("time")
+        time_str = str(time_received) if time_received else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Formatear mensaje para Telegram (tu función en utils.py)
         msg = format_ml_signal(
             ticker=ticker,
             model_prediction=model_prediction,
@@ -45,6 +62,7 @@ def predict():
             time_str=time_str,
         )
 
+        # Guardar en CSV (tu función en storage.py)
         save_signal(
             ticker=ticker,
             prediction=model_prediction,
@@ -55,6 +73,7 @@ def predict():
             signal_time=time_str
         )
 
+        # Guardar en DB (tu función en storage.py)
         save_signal_db(
             ticker=ticker,
             prediction=model_prediction,
@@ -65,25 +84,32 @@ def predict():
             signal_time=time_str
         )
 
+        # Enviar a Telegram
         ok, resp = send_telegram_message(msg)
         if not ok:
-            print("Error al enviar a Telegram:", resp)
+            print(f"Error al enviar a Telegram: {resp}")
             return jsonify({"status": "error", "detail": resp}), 500
 
-        return jsonify({"status": "ok", "message": "Signal sent to Telegram"}), 200
+        print(f"Señal procesada con éxito: {ticker} {model_prediction}")
+        return jsonify({"status": "ok", "message": "Signal processed and sent"}), 200
 
     except Exception as e:
-        print("Exception in /predict:", str(e))
+        print(f"Exception in /predict: {str(e)}")
         return jsonify({"status": "error", "detail": str(e)}), 400
 
 @app.route("/debug-csv", methods=["GET"])
 def debug_csv():
     try:
-        with open("signals.csv", "r", encoding="utf-8") as f:
-            content = f.read()
-        return f"<pre>{content}</pre>", 200
+        if os.path.exists("signals.csv"):
+            with open("signals.csv", "r", encoding="utf-8") as f:
+                content = f.read()
+            return f"<pre>{content}</pre>", 200
+        else:
+            return "Archivo CSV no encontrado", 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # CONFIGURACIÓN PARA RENDER: Usar el puerto que asigne el entorno
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
