@@ -1,7 +1,6 @@
 import csv
 import os
 from datetime import datetime
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -11,10 +10,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # =========================
 # CSV STORAGE (SE MANTIENE)
 # =========================
-
 if not os.path.exists(FILE_PATH):
     with open(FILE_PATH, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, delimiter=';')  # ← CAMBIO: separador punto y coma
         writer.writerow([
             "timestamp",
             "ticker",
@@ -26,10 +24,9 @@ if not os.path.exists(FILE_PATH):
             "signal_time"
         ])
 
-
 def save_signal(ticker, prediction, open_price, sl, tp, timeframe, signal_time):
     with open(FILE_PATH, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, delimiter=';')  # ← CAMBIO: separador punto y coma
         writer.writerow([
             datetime.utcnow().isoformat(),
             ticker,
@@ -41,19 +38,15 @@ def save_signal(ticker, prediction, open_price, sl, tp, timeframe, signal_time):
             signal_time
         ])
 
-
 # =========================
 # POSTGRESQL STORAGE
 # =========================
-
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
 
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_forex_signals (
             id SERIAL PRIMARY KEY,
@@ -67,16 +60,13 @@ def init_db():
             signal_time TEXT
         );
     """)
-
     conn.commit()
     cur.close()
     conn.close()
 
-
 def save_signal_db(ticker, prediction, open_price, sl, tp, timeframe, signal_time):
     conn = get_db_connection()
     cur = conn.cursor()
-
     cur.execute("""
         INSERT INTO ml_forex_signals (
             timestamp, ticker, prediction, open_price, sl, tp, timeframe, signal_time
@@ -91,7 +81,6 @@ def save_signal_db(ticker, prediction, open_price, sl, tp, timeframe, signal_tim
         timeframe,
         signal_time
     ))
-
     conn.commit()
     cur.close()
     conn.close()
