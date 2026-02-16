@@ -1,7 +1,7 @@
 import os
 from flask import Flask, request, jsonify, send_file
 from utils import format_ml_signal, send_telegram_message
-from storage import save_signal, save_signal_db, init_db, FILE_PATH  # ← Agregamos FILE_PATH de storage.py
+from storage import save_signal, save_signal_db, init_db, FILE_PATH
 from datetime import datetime
 
 app = Flask(__name__)
@@ -22,7 +22,7 @@ def predict():
     print(f"--- Nueva Petición Recibida ---")
     print(f"Raw body received: {raw_body}")
     print(f"Content-Type received: {content_type}")
-    
+   
     # Intentar parsear JSON independientemente del Content-Type enviado por TV
     data = request.get_json(silent=True)
    
@@ -33,11 +33,11 @@ def predict():
             data = json.loads(raw_body)
         except Exception as e:
             print(f"Error parseando JSON manualmente: {e}")
-    
+   
     if not data:
         print("Error: No se pudo parsear JSON (data is None o está vacío)")
         return jsonify({"error": "JSON inválido o vacío"}), 400
-    
+   
     try:
         # Extraer datos con valores por defecto
         ticker = str(data.get("ticker", "UNKNOWN"))
@@ -50,7 +50,7 @@ def predict():
         # Manejo de tiempo: usar el del JSON o el actual del servidor
         time_received = data.get("time")
         time_str = str(time_received) if time_received else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        
+       
         # Formatear mensaje para Telegram
         msg = format_ml_signal(
             ticker=ticker,
@@ -61,7 +61,7 @@ def predict():
             timeframe=timeframe,
             time_str=time_str,
         )
-        
+       
         # Guardar en CSV
         save_signal(
             ticker=ticker,
@@ -72,7 +72,7 @@ def predict():
             timeframe=timeframe,
             signal_time=time_str
         )
-        
+       
         # Guardar en DB
         save_signal_db(
             ticker=ticker,
@@ -83,21 +83,21 @@ def predict():
             timeframe=timeframe,
             signal_time=time_str
         )
-        
+       
         # Enviar a Telegram
         ok, resp = send_telegram_message(msg)
         if not ok:
             print(f"Error al enviar a Telegram: {resp}")
             return jsonify({"status": "error", "detail": resp}), 500
-        
+       
         print(f"Señal procesada con éxito: {ticker} {model_prediction}")
         return jsonify({"status": "ok", "message": "Signal processed and sent"}), 200
-    
+   
     except Exception as e:
         print(f"Exception in /predict: {str(e)}")
         return jsonify({"status": "error", "detail": str(e)}), 400
 
-# Ruta original para ver el contenido como texto (útil para debug rápido)
+# Ruta para ver el contenido del CSV como texto (debug)
 @app.route("/debug-csv", methods=["GET"])
 def debug_csv():
     try:
@@ -110,15 +110,14 @@ def debug_csv():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# NUEVA RUTA: Descargar el CSV como archivo adjunto
+# Ruta para descargar el CSV como archivo adjunto
 @app.route("/download-csv", methods=["GET"])
 def download_csv():
     try:
         if os.path.exists(FILE_PATH):
-            # Nombre del archivo con fecha actual (UTC)
             today = datetime.utcnow().strftime("%Y%m%d")
             download_name = f"ml_forex_signals_{today}.csv"
-            
+           
             return send_file(
                 FILE_PATH,
                 mimetype="text/csv",
@@ -131,7 +130,87 @@ def download_csv():
         print(f"Error en /download-csv: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+# NUEVA RUTA: Cerrar una señal pendiente y calcular WIN/LOSS
+@app.route("/close-signal", methods=["POST"])
+def close_signal():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "JSON inválido o vacío"}), 400
+   
+    try:
+        ticker = data.get("ticker")
+        if not ticker:
+            return jsonify({"error": "Falta el campo 'ticker'"}), 400
+        
+        close_price = float(data.get("close_price"))
+        time_str = data.get("time") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Conectar a DB
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Buscar la última señal PENDING para ese ticker
+        cur.execute("""
+            SELECT id, open_price, prediction, sl, tp 
+            FROM ml_forex_signals 
+            WHERE ticker = %s AND result = 'PENDING' 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """, (ticker,))
+        
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            return jsonify({"error": f"No hay señal PENDING para {ticker}"}), 404
+        
+        signal_id, open_price, prediction, sl, tp = row
+        
+        # Calcular resultado (WIN/LOSS) - lógica básica
+        if prediction == "BUY":
+            result = "WIN" if close_price >= open_price else "LOSS"
+        else:  # SELL
+            result = "WIN" if close_price <= open_price else "LOSS"
+        
+        # Calcular pips aproximados (para pares con 4-5 decimales, multiplica x10000)
+        pips = (close_price - open_price) * 10000 if prediction == "BUY" else (open_price - close_price) * 10000
+        
+        # Actualizar la señal
+        cur.execute("""
+            UPDATE ml_forex_signals 
+            SET close_price = %s, 
+                result = %s, 
+                pips = %s 
+            WHERE id = %s
+        """, (close_price, result, pips, signal_id))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Formatear y enviar mensaje de cierre a Telegram
+        close_msg = (
+            f"🏁 <b>CIERRE {ticker}</b>\n"
+            f"Resultado: {result}\n"
+            f"Precio Cierre: {close_price:.5f}\n"
+            f"Pips: {pips:.1f}"
+        )
+        ok, resp = send_telegram_message(close_msg)
+        if not ok:
+            print(f"Error enviando cierre a Telegram: {resp}")
+        
+        print(f"Señal cerrada: {ticker} - {result} - Pips: {pips}")
+        return jsonify({
+            "status": "ok",
+            "message": "Señal cerrada",
+            "result": result,
+            "pips": pips
+        }), 200
+   
+    except Exception as e:
+        print(f"Error en /close-signal: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
-    # CONFIGURACIÓN PARA RENDER: Usar el puerto que asigne el entorno
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
