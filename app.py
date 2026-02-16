@@ -1,14 +1,9 @@
 import os
 from flask import Flask, request, jsonify, send_file
 from utils import format_ml_signal, send_telegram_message
-from storage import (
-    save_signal, 
-    save_signal_db, 
-    init_db, 
-    FILE_PATH, 
-    get_db_connection   # ← Agregado
-)
+from storage import save_signal, save_signal_db, init_db, FILE_PATH, get_db_connection
 from datetime import datetime
+from io import BytesIO
 
 app = Flask(__name__)
 
@@ -19,14 +14,90 @@ init_db()
 def health():
     return jsonify({"status": "ok", "message": "ml-forex server running"}), 200
 
-# ... (mantengo tu /predict igual, solo copio lo que ya tenías) ...
 @app.route("/predict", methods=["POST"])
 def predict():
-    # (tu código actual de /predict se mantiene igual - lo omito aquí por brevedad, pero pégalo completo)
-    # ... tu código de predict ...
-    pass   # ← reemplaza esto con tu código completo de predict
+    # DEBUG: Imprimir lo que llega exactamente para monitoreo en Render
+    raw_body = request.data.decode('utf-8', errors='ignore').strip()
+    content_type = request.headers.get('Content-Type')
+   
+    print(f"--- Nueva Petición Recibida ---")
+    print(f"Raw body received: {raw_body}")
+    print(f"Content-Type received: {content_type}")
+   
+    # Intentar parsear JSON independientemente del Content-Type enviado por TV
+    data = request.get_json(silent=True)
+   
+    # Si get_json falla (a veces por Content-Type text/plain), forzamos parseo manual
+    if not data and raw_body:
+        import json
+        try:
+            data = json.loads(raw_body)
+        except Exception as e:
+            print(f"Error parseando JSON manualmente: {e}")
+   
+    if not data:
+        print("Error: No se pudo parsear JSON (data is None o está vacío)")
+        return jsonify({"error": "JSON inválido o vacío"}), 400
+   
+    try:
+        # Extraer datos con valores por defecto
+        ticker = str(data.get("ticker", "UNKNOWN"))
+        model_prediction = str(data.get("prediction", "BUY")).upper()
+        open_price = float(data.get("open_price", 0.0))
+        sl = float(data.get("sl", 0.0))
+        tp = float(data.get("tp", 0.0))
+        timeframe = str(data.get("timeframe", "UNKNOWN"))
+       
+        # Manejo de tiempo: usar el del JSON o el actual del servidor
+        time_received = data.get("time")
+        time_str = str(time_received) if time_received else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+       
+        # Formatear mensaje para Telegram
+        msg = format_ml_signal(
+            ticker=ticker,
+            model_prediction=model_prediction,
+            open_price=open_price,
+            sl=sl,
+            tp=tp,
+            timeframe=timeframe,
+            time_str=time_str,
+        )
+       
+        # Guardar en CSV
+        save_signal(
+            ticker=ticker,
+            prediction=model_prediction,
+            open_price=open_price,
+            sl=sl,
+            tp=tp,
+            timeframe=timeframe,
+            signal_time=time_str
+        )
+       
+        # Guardar en DB
+        save_signal_db(
+            ticker=ticker,
+            prediction=model_prediction,
+            open_price=open_price,
+            sl=sl,
+            tp=tp,
+            timeframe=timeframe,
+            signal_time=time_str
+        )
+       
+        # Enviar a Telegram
+        ok, resp = send_telegram_message(msg)
+        if not ok:
+            print(f"Error al enviar a Telegram: {resp}")
+            return jsonify({"status": "error", "detail": resp}), 500
+       
+        print(f"Señal procesada con éxito: {ticker} {model_prediction}")
+        return jsonify({"status": "ok", "message": "Signal processed and sent"}), 200
+   
+    except Exception as e:
+        print(f"Exception in /predict: {str(e)}")
+        return jsonify({"status": "error", "detail": str(e)}), 400
 
-# Ruta debug-csv (la que ya tenías)
 @app.route("/debug-csv", methods=["GET"])
 def debug_csv():
     try:
@@ -39,7 +110,6 @@ def debug_csv():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Ruta download-csv (con BOM para que Excel lo abra mejor)
 @app.route("/download-csv", methods=["GET"])
 def download_csv():
     try:
@@ -50,9 +120,8 @@ def download_csv():
             with open(FILE_PATH, "r", encoding="utf-8") as f:
                 content = f.read()
             
-            # BOM para Excel en Latinoamérica
+            # BOM para Excel
             bom_content = '\ufeff' + content
-            from io import BytesIO
             output = BytesIO(bom_content.encode('utf-8'))
             output.seek(0)
             
@@ -68,7 +137,6 @@ def download_csv():
         print(f"Error en /download-csv: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# Ruta para cerrar señal (mejorada y corregida)
 @app.route("/close-signal", methods=["POST"])
 def close_signal():
     data = request.get_json(silent=True)
@@ -98,7 +166,6 @@ def close_signal():
         
         signal_id, open_price, prediction = row
         
-        # Calcular WIN / LOSS
         if prediction == "BUY":
             result = "WIN" if close_price >= open_price else "LOSS"
         else:
@@ -106,7 +173,6 @@ def close_signal():
         
         pips = round((close_price - open_price) * 10000 if prediction == "BUY" else (open_price - close_price) * 10000, 1)
         
-        # Actualizar
         cur.execute("""
             UPDATE ml_forex_signals 
             SET close_price = %s, result = %s, pips = %s 
@@ -117,7 +183,6 @@ def close_signal():
         cur.close()
         conn.close()
         
-        # Mensaje de cierre
         msg = f"🏁 <b>CIERRE {ticker}</b>\nResultado: {result}\nPrecio Cierre: {close_price:.5f}\nPips: {pips}"
         send_telegram_message(msg)
         
