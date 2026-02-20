@@ -16,9 +16,9 @@ def format_ml_signal(ticker, model_prediction, open_price, sl, tp, timeframe, ti
         "🚨 <b>~ ML Signal ~</b>🤖\n\n"
         f"📊 <b>Pair:</b>           {ticker}\n"
         f"↕️ <b>Direction:</b>    {direction}\n"
-        f"💵 <b>Entry:</b>          {open_price:.2f}\n"
-        f"🛑 <b>SL:</b>              {sl:.2f}\n"
-        f"✅ <b>TP:</b>              {tp:.2f}\n"
+        f"💵 <b>Entry:</b>          {open_price:.5f}\n"
+        f"🛑 <b>SL:</b>              {sl:.5f}\n"
+        f"✅ <b>TP:</b>              {tp:.5f}\n"
         f"⏰ <b>TF:</b>              {timeframe}m\n"
         f"📅 <b>Date:</b>          {date_formatted}"
     )
