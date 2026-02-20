@@ -40,19 +40,23 @@ def predict():
         return jsonify({"error": "JSON inválido o vacío"}), 400
    
     try:
-        # Extraer datos con valores por defecto
-        ticker = str(data.get("ticker", "UNKNOWN"))
+        # 1. Extraer y limpiar: Forzamos la conversión a float y redondeamos a 5 decimales
+        # Al usar data.get() con un valor por defecto claro, evitamos que use datos de la petición anterior
+        ticker = str(data.get("ticker", "UNKNOWN")).upper()
         model_prediction = str(data.get("prediction", "BUY")).upper()
-        open_price = float(data.get("open_price", 0.0))
-        sl = float(data.get("sl", 0.0))
-        tp = float(data.get("tp", 0.0))
+        
+        # Redondeamos a 5 decimales para evitar números infinitos tipo 1.123000000001
+        open_price = round(float(data.get("open_price", 0.0)), 5)
+        sl = round(float(data.get("sl", 0.0)), 5)
+        tp = round(float(data.get("tp", 0.0)), 5)
+        
         timeframe = str(data.get("timeframe", "UNKNOWN"))
-       
-        # Manejo de tiempo: usar el del JSON o el actual del servidor
+        
+        # 2. Manejo de tiempo
         time_received = data.get("time")
         time_str = str(time_received) if time_received else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-       
-        # Formatear mensaje para Telegram
+
+        # 3. Formatear mensaje (Asegúrate que format_ml_signal no esté acumulando texto)
         msg = format_ml_signal(
             ticker=ticker,
             model_prediction=model_prediction,
