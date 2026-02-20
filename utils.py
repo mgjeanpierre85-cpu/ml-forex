@@ -7,28 +7,31 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 def format_ml_signal(ticker, model_prediction, open_price, sl, tp, timeframe, time_str):
     direction = "BUY" if model_prediction == "BUY" else "SELL"
 
-    # --- LÓGICA DE CONVERSIÓN DE TIMEFRAME (Igual que en Google Script) ---
-    tf_str = str(timeframe)
-    if tf_str == "60":
+    # --- 1. Conversión de Timeframe para el mensaje de Telegram ---
+    tf_val = str(timeframe)
+    if tf_val == "60":
         tf_display = "1H"
-    elif tf_str == "240":
+    elif tf_val == "240":
         tf_display = "4H"
-    elif tf_str in ["1D", "D"]:
+    elif tf_val in ["1D", "D"]:
         tf_display = "1 Day"
     else:
-        # Si es un número (minutos), le ponemos la 'm'
-        tf_display = f"{tf_str}m" if tf_str.isdigit() else tf_str
+        # Si es un número (minutos), le ponemos la 'm' (ej: 15m)
+        tf_display = f"{tf_val}m" if tf_val.isdigit() else tf_val
 
-    # --- MANEJO SEGURO DE FECHA ---
+    # --- 2. Manejo Seguro de Fecha (Evita error 500) ---
     try:
+        # Intentamos formatear si viene en el formato estándar
         dt_obj = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
         date_formatted = dt_obj.strftime("%m/%d/%Y")
-    except:
-        date_formatted = time_str # Si falla, enviamos el texto tal cual
+    except Exception:
+        # Si falla el parseo, usamos el string tal cual viene para no romper el servidor
+        date_formatted = time_str
 
-    # --- SELECCIÓN DINÁMICA DE DECIMALES ---
-    # Si es Oro (XAU) usamos 2 o 3, si es Forex usamos 5
-    prec = 2 if "XAU" in ticker.upper() else 5
+    # --- 3. Precisión Dinámica ---
+    # Si es Oro/Plata usamos 2 decimales, si es Forex usamos 5
+    is_metal = any(metal in ticker.upper() for metal in ["XAU", "XAG", "GOLD", "SILVER"])
+    prec = 2 if is_metal else 5
 
     msg = (
         "🚨 <b>~ ML Signal ~</b>🤖\n\n"
