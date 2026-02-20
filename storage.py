@@ -8,23 +8,15 @@ FILE_PATH = "signals.csv"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # =========================
-# CSV STORAGE (actualizado con columnas extras y separador ;)
+# CSV STORAGE (Actualizado)
 # =========================
 if not os.path.exists(FILE_PATH):
     with open(FILE_PATH, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter=';')
         writer.writerow([
-            "timestamp",
-            "ticker",
-            "prediction",
-            "open_price",
-            "sl",
-            "tp",
-            "timeframe",
-            "signal_time",
-            "close_price",      # nueva
-            "result",           # nueva
-            "pips"              # nueva
+            "timestamp", "ticker", "prediction", "open_price", 
+            "sl", "tp", "timeframe", "signal_time", 
+            "close_price", "result", "pips"
         ])
 
 def save_signal(ticker, prediction, open_price, sl, tp, timeframe, signal_time, close_price=None, result="PENDING", pips=None):
@@ -39,13 +31,13 @@ def save_signal(ticker, prediction, open_price, sl, tp, timeframe, signal_time, 
             tp,
             timeframe,
             signal_time,
-            close_price,        # None al inicio
+            close_price,
             result,
-            pips                # None al inicio
+            pips
         ])
 
 # =========================
-# POSTGRESQL STORAGE (agregamos close_price, result, pips)
+# POSTGRESQL STORAGE
 # =========================
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -53,6 +45,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
+    # TIP: Cambiamos timeframe a TEXT por si acaso, o lo dejamos INTEGER si confías en el filtro de app.py
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ml_forex_signals (
             id SERIAL PRIMARY KEY,
@@ -62,7 +55,7 @@ def init_db():
             open_price NUMERIC,
             sl NUMERIC,
             tp NUMERIC,
-            timeframe INTEGER,
+            timeframe TEXT,  -- Cambiado a TEXT para evitar errores de tipo
             signal_time TEXT,
             close_price NUMERIC DEFAULT NULL,
             result TEXT DEFAULT 'PENDING',
@@ -88,7 +81,7 @@ def save_signal_db(ticker, prediction, open_price, sl, tp, timeframe, signal_tim
         open_price,
         sl,
         tp,
-        timeframe,
+        str(timeframe), # Aseguramos que sea string para la DB
         signal_time,
         close_price,
         result,
