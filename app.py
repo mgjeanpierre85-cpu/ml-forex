@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask, request, jsonify, send_file
 from utils import format_ml_signal, send_telegram_message
 from storage import save_signal, save_signal_db, init_db, FILE_PATH, get_db_connection
@@ -16,11 +17,11 @@ def health():
 
 @app.route("/predict", methods=["POST"])
 def predict():
+    # 1. Obtener y parsear el cuerpo del JSON
     raw_body = request.data.decode('utf-8', errors='ignore').strip()
     data = request.get_json(silent=True)
     
     if not data and raw_body:
-        import json
         try:
             data = json.loads(raw_body)
         except Exception as e:
@@ -30,34 +31,41 @@ def predict():
         return jsonify({"error": "JSON inválido o vacío"}), 400
     
     try:
-        # --- CAMBIO IMPORTANTE AQUÍ: REDONDEO A 5 DECIMALES ---
+        # 2. Extracción de datos con limpieza
         ticker = str(data.get("ticker", "UNKNOWN")).upper()
         model_prediction = str(data.get("prediction", "BUY")).upper()
         
-        # Al usar round(..., 5) evitamos que los datos se repitan o se recorten a 1.91
+        # Redondeo a 5 decimales para precisión en Forex
         open_price = round(float(data.get("open_price", 0.0)), 5)
         sl = round(float(data.get("sl", 0.0)), 5)
         tp = round(float(data.get("tp", 0.0)), 5)
         
-        timeframe = str(data.get("timeframe", "UNKNOWN"))
-        # -------------------------------------------------------
+        # --- FIX CRÍTICO: TIMEFRAME ---
+        tf_raw = data.get("timeframe", "UNKNOWN")
+        # Para la DB: Si es un número (ej: "60"), lo pasamos a int. Si no, lo ponemos como 0.
+        tf_for_db = int(tf_raw) if str(tf_raw).isdigit() else 0
         
+        # Manejo de tiempo
         time_received = data.get("time")
         time_str = str(time_received) if time_received else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         
+        # 3. Formatear mensaje para Telegram (usando utils.py con conversión 60 -> 1H)
         msg = format_ml_signal(
             ticker=ticker,
             model_prediction=model_prediction,
             open_price=open_price,
             sl=sl,
             tp=tp,
-            timeframe=timeframe,
+            timeframe=tf_raw, # Pasamos el valor original para que utils decida el formato
             time_str=time_str,
         )
         
-        save_signal(ticker=ticker, prediction=model_prediction, open_price=open_price, sl=sl, tp=tp, timeframe=timeframe, signal_time=time_str)
-        save_signal_db(ticker=ticker, prediction=model_prediction, open_price=open_price, sl=sl, tp=tp, timeframe=timeframe, signal_time=time_str)
+        # 4. Guardado en archivos locales y Base de Datos SQL
+        # Usamos tf_for_db para asegurar que la columna INTEGER de la DB no falle
+        save_signal(ticker=ticker, prediction=model_prediction, open_price=open_price, sl=sl, tp=tp, timeframe=tf_for_db, signal_time=time_str)
+        save_signal_db(ticker=ticker, prediction=model_prediction, open_price=open_price, sl=sl, tp=tp, timeframe=tf_for_db, signal_time=time_str)
         
+        # 5. Envío de notificación
         ok, resp = send_telegram_message(msg)
         if not ok:
             return jsonify({"status": "error", "detail": resp}), 500
@@ -65,6 +73,7 @@ def predict():
         return jsonify({"status": "ok", "message": "Signal processed and sent"}), 200
     
     except Exception as e:
+        print(f"Error en /predict: {str(e)}")
         return jsonify({"status": "error", "detail": str(e)}), 400
 
 @app.route("/close-signal", methods=["POST"])
@@ -75,38 +84,52 @@ def close_signal():
     
     try:
         ticker = str(data.get("ticker", "")).upper()
-        # Redondeamos también el precio de cierre para cálculos exactos
+        # Redondeamos a 5 decimales para evitar desajustes en el cálculo de pips
         close_price = round(float(data.get("close_price", 0.0)), 5)
         time_str = data.get("time") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
         conn = get_db_connection()
         cur = conn.cursor()
+        
+        # Buscamos la última operación abierta (PENDING) para ese par
         cur.execute("SELECT id, open_price, prediction FROM ml_forex_signals WHERE ticker = %s AND result = 'PENDING' ORDER BY timestamp DESC LIMIT 1", (ticker,))
         row = cur.fetchone()
         
         if not row:
             cur.close()
             conn.close()
-            return jsonify({"error": "No hay señal PENDING"}), 404
+            return jsonify({"error": f"No hay señal PENDING para {ticker}"}), 404
         
         signal_id, open_price, prediction = row
+        
+        # Lógica de Ganancia/Pérdida
         result = "WIN" if (prediction == "BUY" and close_price >= open_price) or (prediction == "SELL" and close_price <= open_price) else "LOSS"
         
-        # Cálculo de pips con un decimal de precisión
+        # Cálculo de pips para Forex (basado en 4to decimal)
         pips = round((close_price - open_price) * 10000 if prediction == "BUY" else (open_price - close_price) * 10000, 1)
         
+        # Actualizamos la señal en la DB
         cur.execute("UPDATE ml_forex_signals SET close_price = %s, result = %s, pips = %s WHERE id = %s", (close_price, result, pips, signal_id))
+        
         conn.commit()
         cur.close()
         conn.close()
         
-        msg = f"🏁 <b>CIERRE {ticker}</b>\nResultado: {result}\nPrecio Cierre: {close_price:.5f}\nPips: {pips}"
+        # Notificamos el cierre en Telegram
+        msg = (
+            f"🏁 <b>CIERRE {ticker}</b>\n"
+            f"Resultado: {'🟢' if result == 'WIN' else '🔴'} {result}\n"
+            f"Precio Cierre: {close_price:.5f}\n"
+            f"Pips: {pips}"
+        )
         send_telegram_message(msg)
         
         return jsonify({"status": "ok", "result": result, "pips": pips}), 200
     except Exception as e:
+        print(f"Error en /close-signal: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
+    # Render usa la variable de entorno PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
