@@ -15,6 +15,15 @@ init_db()
 def health():
     return jsonify({"status": "ok", "message": "ml-forex server running"}), 200
 
+# --- NUEVA RUTA: DESCARGA DE EXCEL (CSV) ---
+@app.route("/download-csv", methods=["GET"])
+def download_csv():
+    try:
+        # Esto envía el archivo signals.csv a tu navegador
+        return send_file(FILE_PATH, as_attachment=True, mimetype='text/csv')
+    except Exception as e:
+        return jsonify({"error": f"No se encontró el archivo: {str(e)}"}), 404
+
 @app.route("/predict", methods=["POST"])
 def predict():
     # 1. Obtener y parsear el cuerpo del JSON
@@ -42,26 +51,24 @@ def predict():
         
         # --- FIX CRÍTICO: TIMEFRAME ---
         tf_raw = data.get("timeframe", "UNKNOWN")
-        # Para la DB: Si es un número (ej: "60"), lo pasamos a int. Si no, lo ponemos como 0.
         tf_for_db = int(tf_raw) if str(tf_raw).isdigit() else 0
         
         # Manejo de tiempo
         time_received = data.get("time")
         time_str = str(time_received) if time_received else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         
-        # 3. Formatear mensaje para Telegram (usando utils.py con conversión 60 -> 1H)
+        # 3. Formatear mensaje para Telegram
         msg = format_ml_signal(
             ticker=ticker,
             model_prediction=model_prediction,
             open_price=open_price,
             sl=sl,
             tp=tp,
-            timeframe=tf_raw, # Pasamos el valor original para que utils decida el formato
+            timeframe=tf_raw,
             time_str=time_str,
         )
         
         # 4. Guardado en archivos locales y Base de Datos SQL
-        # Usamos tf_for_db para asegurar que la columna INTEGER de la DB no falle
         save_signal(ticker=ticker, prediction=model_prediction, open_price=open_price, sl=sl, tp=tp, timeframe=tf_for_db, signal_time=time_str)
         save_signal_db(ticker=ticker, prediction=model_prediction, open_price=open_price, sl=sl, tp=tp, timeframe=tf_for_db, signal_time=time_str)
         
@@ -84,14 +91,12 @@ def close_signal():
     
     try:
         ticker = str(data.get("ticker", "")).upper()
-        # Redondeamos a 5 decimales para evitar desajustes en el cálculo de pips
         close_price = round(float(data.get("close_price", 0.0)), 5)
         time_str = data.get("time") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Buscamos la última operación abierta (PENDING) para ese par
         cur.execute("SELECT id, open_price, prediction FROM ml_forex_signals WHERE ticker = %s AND result = 'PENDING' ORDER BY timestamp DESC LIMIT 1", (ticker,))
         row = cur.fetchone()
         
@@ -101,21 +106,15 @@ def close_signal():
             return jsonify({"error": f"No hay señal PENDING para {ticker}"}), 404
         
         signal_id, open_price, prediction = row
-        
-        # Lógica de Ganancia/Pérdida
         result = "WIN" if (prediction == "BUY" and close_price >= open_price) or (prediction == "SELL" and close_price <= open_price) else "LOSS"
-        
-        # Cálculo de pips para Forex (basado en 4to decimal)
         pips = round((close_price - open_price) * 10000 if prediction == "BUY" else (open_price - close_price) * 10000, 1)
         
-        # Actualizamos la señal en la DB
         cur.execute("UPDATE ml_forex_signals SET close_price = %s, result = %s, pips = %s WHERE id = %s", (close_price, result, pips, signal_id))
         
         conn.commit()
         cur.close()
         conn.close()
         
-        # Notificamos el cierre en Telegram
         msg = (
             f"🏁 <b>CIERRE {ticker}</b>\n"
             f"Resultado: {'🟢' if result == 'WIN' else '🔴'} {result}\n"
@@ -130,6 +129,5 @@ def close_signal():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # Render usa la variable de entorno PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
