@@ -4,15 +4,15 @@ from flask import Flask, request, jsonify, send_file
 from utils import format_ml_signal, send_telegram_message
 from storage import save_signal, save_signal_db, init_db, FILE_PATH, get_db_connection
 from datetime import datetime
-from io import BytesIO
 
 app = Flask(__name__)
 
+# Inicializa la base de datos con la nueva estructura de 5 decimales
 init_db()
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "ML-Forex Pro Server Running"}), 200
+    return jsonify({"status": "ok", "message": "ML-Forex Data Collector Running"}), 200
 
 @app.route("/download-csv", methods=["GET"])
 def download_csv():
@@ -35,77 +35,77 @@ def predict():
         if prediction == "EXIT":
             return process_close(data)
 
-        # LÓGICA DE ENTRADA
-        open_price = round(float(data.get("open_price", 0.0)), 5)
-        sl = round(float(data.get("sl", 0.0)), 5)
-        tp = round(float(data.get("tp", 0.0)), 5)
+        # LÓGICA DE ENTRADA (Recolección de datos limpios)
+        open_price = float(data.get("open_price", 0.0))
+        sl = float(data.get("sl", 0.0))
+        tp = float(data.get("tp", 0.0))
         
         # Identificador único (Sincronizado con PineScript)
-        signal_id = data.get("signal_id", "N/A")
-        tf_raw = data.get("timeframe", "UNKNOWN")
-        tf_for_db = int(tf_raw) if str(tf_raw).isdigit() else 0
+        signal_id = str(data.get("signal_id", "N/A"))
+        tf_raw = str(data.get("timeframe", "UNKNOWN"))
         time_str = data.get("time") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Formatear y enviar a Telegram
-        msg = format_ml_signal(
-            ticker=ticker,
-            model_prediction=prediction,
-            open_price=open_price,
-            sl=sl,
-            tp=tp,
-            timeframe=tf_raw,
-            time_str=time_str
-        )
+        # 1. GUARDAR DATA (Sincronizado con el nuevo storage.py)
+        # Pasamos el signal_id para que no falten argumentos
+        save_signal(ticker, prediction, open_price, sl, tp, tf_raw, time_str, signal_id)
+        save_signal_db(ticker, prediction, open_price, sl, tp, tf_raw, time_str, signal_id)
         
-        # Guardar (Añade el signal_id en el comentario o campo dedicado de tu storage)
-        save_signal(ticker=ticker, prediction=prediction, open_price=open_price, sl=sl, tp=tp, timeframe=tf_for_db, signal_time=time_str)
-        save_signal_db(ticker=ticker, prediction=prediction, open_price=open_price, sl=sl, tp=tp, timeframe=tf_for_db, signal_time=time_str)
-        
+        # 2. ENVIAR A TELEGRAM DE PRUEBA (Sincronizado con utils.py)
+        msg = format_ml_signal(ticker, prediction, open_price, sl, tp, tf_raw, time_str)
         send_telegram_message(msg)
-        return jsonify({"status": "ok", "signal_id": signal_id}), 200
+        
+        return jsonify({"status": "data_saved", "signal_id": signal_id}), 200
 
     except Exception as e:
+        print(f"Error en /predict: {e}")
         return jsonify({"status": "error", "detail": str(e)}), 400
 
-# Lógica compartida para cerrar señales
 def process_close(data):
     try:
         ticker = str(data.get("ticker", "")).upper()
-        close_price = round(float(data.get("close_price", 0.0)), 5)
+        close_price = float(data.get("close_price", 0.0))
+        signal_id = str(data.get("signal_id", "N/A"))
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Intentar buscar por ticker pendiente
-        cur.execute("SELECT id, open_price, prediction FROM ml_forex_signals WHERE ticker = %s AND result = 'PENDING' ORDER BY timestamp DESC LIMIT 1", (ticker,))
+        # Intentar buscar por signal_id primero para máxima precisión
+        if signal_id != "N/A":
+            cur.execute("SELECT id, open_price, prediction FROM ml_forex_signals WHERE ticker = %s AND signal_id = %s AND result = 'PENDING'", (ticker, signal_id))
+        else:
+            cur.execute("SELECT id, open_price, prediction FROM ml_forex_signals WHERE ticker = %s AND result = 'PENDING' ORDER BY timestamp DESC LIMIT 1", (ticker,))
+        
         row = cur.fetchone()
         
         if not row:
             cur.close()
             conn.close()
-            return jsonify({"error": "No pending signal"}), 404
+            return jsonify({"error": f"No pending signal for {ticker}"}), 404
         
-        signal_id_db, open_price, prediction = row
+        id_db, open_price, prediction = row
         
-        # CALCULO DE RESULTADO Y PIPS DINÁMICO
-        result = "WIN" if (prediction == "BUY" and close_price >= open_price) or (prediction == "SELL" and close_price <= open_price) else "LOSS"
-        
-        # MULTIPLICADOR: 100 para JPY, 10000 para el resto
+        # CÁLCULO DE PIPS (Diferencia Forex vs JPY)
         multiplier = 100 if "JPY" in ticker else 10000
-        pips = round((close_price - open_price if prediction == "BUY" else open_price - close_price) * multiplier, 1)
+        diff = close_price - open_price if prediction == "BUY" else open_price - close_price
+        pips = round(diff * multiplier, 1)
+        result = "WIN" if pips >= 0 else "LOSS"
         
-        cur.execute("UPDATE ml_forex_signals SET close_price = %s, result = %s, pips = %s WHERE id = %s", (close_price, result, pips, signal_id_db))
+        # Actualizar DB con precisión
+        cur.execute("UPDATE ml_forex_signals SET close_price = %s, result = %s, pips = %s WHERE id = %s", (close_price, result, pips, id_db))
         conn.commit()
         cur.close()
         conn.close()
         
+        # Mensaje simplificado para el room de prueba
         msg = (f"🏁 <b>CIERRE {ticker}</b>\n"
                f"Resultado: {'🟢' if result == 'WIN' else '🔴'} {result}\n"
-               f"Precio Cierre: {close_price:.5f}\n"
-               f"Pips: {pips}")
+               f"Pips: {pips}\n"
+               f"ID: {signal_id}")
         send_telegram_message(msg)
-        return jsonify({"status": "ok", "pips": pips}), 200
+        
+        return jsonify({"status": "closed", "pips": pips}), 200
     except Exception as e:
+        print(f"Error en /close-signal: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/close-signal", methods=["POST"])
