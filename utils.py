@@ -5,7 +5,8 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 def format_ml_signal(ticker, model_prediction, open_price, sl, tp, timeframe, time_str):
-    direction = "BUY 🟢" if model_prediction == "BUY" else "SELL 🔴"
+    # Aseguramos que la dirección sea texto limpio
+    direction = "BUY 🟢" if str(model_prediction).upper() == "BUY" else "SELL 🔴"
 
     # --- 1. Conversión de Timeframe ---
     tf_val = str(timeframe)
@@ -14,25 +15,33 @@ def format_ml_signal(ticker, model_prediction, open_price, sl, tp, timeframe, ti
 
     # --- 2. Manejo de Fecha ---
     try:
+        # Intentar parsear si viene como string de sistema
         dt_obj = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
         date_formatted = dt_obj.strftime("%d/%m/%Y %H:%M")
     except:
         date_formatted = time_str
 
-    # --- 3. Precisión Dinámica (Oro/Plata 2, JPY 3, Forex 5) ---
-    ticker_up = ticker.upper()
-    is_metal = any(m in ticker_up for m in ["XAU", "XAG", "GOLD", "SILVER"])
+    # --- 3. Precisión de Forex (JPY 3, Otros 5) ---
+    ticker_up = str(ticker).upper()
     is_jpy = "JPY" in ticker_up
-    
-    prec = 2 if is_metal else (3 if is_jpy else 5)
+    prec = 3 if is_jpy else 5
+
+    # Blindaje contra valores no numéricos para evitar errores de formateo
+    try:
+        f_open = float(open_price)
+        f_sl = float(sl)
+        f_tp = float(tp)
+    except:
+        # Si falla la conversión, enviamos como texto para no tumbar el servidor
+        return f"🚨 Error en formato de precios para {ticker_up}"
 
     msg = (
         "🚨 <b>~ ML Forex Signal ~</b> 🤖\n\n"
         f"📊 <b>Pair:</b>            {ticker_up}\n"
         f"↕️ <b>Direction:</b>       {direction}\n"
-        f"💵 <b>Entry:</b>           {open_price:.{prec}f}\n"
-        f"🛑 <b>SL:</b>              {sl:.{prec}f}\n"
-        f"✅ <b>TP:</b>              {tp:.{prec}f}\n"
+        f"💵 <b>Entry:</b>           {f_open:.{prec}f}\n"
+        f"🛑 <b>SL:</b>              {f_sl:.{prec}f}\n"
+        f"✅ <b>TP:</b>              {f_tp:.{prec}f}\n"
         f"⏰ <b>TF:</b>              {tf_display}\n"
         f"📅 <b>Date:</b>            {date_formatted}"
     )
@@ -49,4 +58,5 @@ def send_telegram_message(text):
         r = requests.post(TELEGRAM_API_URL, json=payload, timeout=10)
         return True, r.json()
     except Exception as e:
+        print(f"Error enviando Telegram: {e}")
         return False, str(e)
