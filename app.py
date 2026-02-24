@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Inicializa la base de datos con la nueva estructura de 5 decimales
+# Inicializa la base de datos con la estructura de precisión (5 decimales / 3 decimales)
 init_db()
 
 @app.route("/", methods=["GET"])
@@ -35,7 +35,7 @@ def predict():
         if prediction == "EXIT":
             return process_close(data)
 
-        # LÓGICA DE ENTRADA (Recolección de datos limpios)
+        # LÓGICA DE ENTRADA (Conversión explícita a float para evitar errores de tipo)
         open_price = float(data.get("open_price", 0.0))
         sl = float(data.get("sl", 0.0))
         tp = float(data.get("tp", 0.0))
@@ -45,12 +45,11 @@ def predict():
         tf_raw = str(data.get("timeframe", "UNKNOWN"))
         time_str = data.get("time") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. GUARDAR DATA (Sincronizado con el nuevo storage.py)
-        # Pasamos el signal_id para que no falten argumentos
+        # 1. GUARDAR DATA (Sincronizado con storage.py)
         save_signal(ticker, prediction, open_price, sl, tp, tf_raw, time_str, signal_id)
         save_signal_db(ticker, prediction, open_price, sl, tp, tf_raw, time_str, signal_id)
         
-        # 2. ENVIAR A TELEGRAM DE PRUEBA (Sincronizado con utils.py)
+        # 2. ENVIAR A TELEGRAM DE PRUEBA (LABORATORIO)
         msg = format_ml_signal(ticker, prediction, open_price, sl, tp, tf_raw, time_str)
         send_telegram_message(msg)
         
@@ -61,6 +60,10 @@ def predict():
         return jsonify({"status": "error", "detail": str(e)}), 400
 
 def process_close(data):
+    """
+    Lógica centralizada para procesar cierres de operaciones y calcular Pips.
+    Maneja la conversión de tipos de datos para evitar errores de cálculo.
+    """
     try:
         ticker = str(data.get("ticker", "")).upper()
         close_price = float(data.get("close_price", 0.0))
@@ -69,7 +72,7 @@ def process_close(data):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Intentar buscar por signal_id primero para máxima precisión
+        # 1. Buscar la señal pendiente en la DB
         if signal_id != "N/A":
             cur.execute("SELECT id, open_price, prediction FROM ml_forex_signals WHERE ticker = %s AND signal_id = %s AND result = 'PENDING'", (ticker, signal_id))
         else:
@@ -80,38 +83,58 @@ def process_close(data):
         if not row:
             cur.close()
             conn.close()
-            return jsonify({"error": f"No pending signal for {ticker}"}), 404
+            return jsonify({"error": f"No hay señal pendiente para {ticker}"}), 404
         
-        id_db, open_price, prediction = row
+        id_db, raw_open_price, prediction = row
         
-        # CÁLCULO DE PIPS (Diferencia Forex vs JPY)
-        multiplier = 100 if "JPY" in ticker else 10000
-        diff = close_price - open_price if prediction == "BUY" else open_price - close_price
+        # CORRECCIÓN CLAVE: Asegurar que open_price sea float antes de operar
+        open_price = float(raw_open_price)
+        
+        # 2. CÁLCULO DE PIPS / PUNTOS SEGÚN ACTIVO
+        # Diferencia entre metales (XAU/XAG), JPY y Forex estándar
+        if "JPY" in ticker:
+            multiplier = 100
+        elif any(metal in ticker for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
+            multiplier = 10  # Ajuste para metales (1 punto = 10 pips)
+        else:
+            multiplier = 10000
+            
+        # Calcular diferencia basada en la dirección de la señal
+        diff = close_price - open_price if str(prediction).upper() == "BUY" else open_price - close_price
         pips = round(diff * multiplier, 1)
         result = "WIN" if pips >= 0 else "LOSS"
         
-        # Actualizar DB con precisión
-        cur.execute("UPDATE ml_forex_signals SET close_price = %s, result = %s, pips = %s WHERE id = %s", (close_price, result, pips, id_db))
+        # 3. ACTUALIZAR BASE DE DATOS
+        cur.execute("""
+            UPDATE ml_forex_signals 
+            SET close_price = %s, result = %s, pips = %s 
+            WHERE id = %s
+        """, (close_price, result, pips, id_db))
+        
         conn.commit()
         cur.close()
         conn.close()
         
-        # Mensaje simplificado para el room de prueba
+        # 4. NOTIFICACIÓN DE CIERRE (TELEGRAM)
+        emoji = '🟢' if result == 'WIN' else '🔴'
         msg = (f"🏁 <b>CIERRE {ticker}</b>\n"
-               f"Resultado: {'🟢' if result == 'WIN' else '🔴'} {result}\n"
-               f"Pips: {pips}\n"
+               f"Resultado: {emoji} {result}\n"
+               f"Pips/Puntos: {pips}\n"
                f"ID: {signal_id}")
         send_telegram_message(msg)
         
-        return jsonify({"status": "closed", "pips": pips}), 200
+        return jsonify({"status": "closed", "pips": pips, "result": result}), 200
+
     except Exception as e:
-        print(f"Error en /close-signal: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"Error crítico en process_close: {e}")
+        return jsonify({"status": "error", "detail": str(e)}), 500
 
 @app.route("/close-signal", methods=["POST"])
 def manual_close():
-    return process_close(request.get_json(silent=True))
+    data = request.get_json(silent=True)
+    return process_close(data)
 
 if __name__ == "__main__":
+    # Render usa la variable de entorno PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
