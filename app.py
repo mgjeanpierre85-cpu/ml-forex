@@ -21,6 +21,26 @@ def download_csv():
     except Exception as e:
         return jsonify({"error": f"Archivo no encontrado: {str(e)}"}), 404
 
+# ==============================================================================
+# RUTA TEMPORAL PARA LIMPIAR SEÑALES VIEJAS (SOLO EJECUTAR UNA VEZ)
+# ==============================================================================
+@app.route("/reset-db-now", methods=["GET"])
+def reset_db():
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Marca todas las señales PENDING antiguas como OUTDATED
+        cur.execute("UPDATE ml_forex_signals SET result = 'OUTDATED' WHERE result = 'PENDING';")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return "✅ Base de datos de Forex limpiada: Señales viejas marcadas como OUTDATED.", 200
+    except Exception as e:
+        if conn:
+            conn.close()
+        return f"❌ Error al limpiar: {str(e)}", 500
+
 @app.route("/predict", methods=["POST"])
 def predict():
     data = request.get_json(silent=True)
@@ -86,16 +106,13 @@ def process_close(data):
             return jsonify({"error": f"No hay señal pendiente para {ticker} con ID {signal_id}"}), 404
         
         # Extraemos por posición (Cursor normal)
-        # row[0] = id, row[1] = open_price, row[2] = prediction
         id_db = row[0]
         open_price = float(row[1]) 
         prediction = str(row[2]).upper()
         
-        # 2. Lógica de Pips / Puntos
+        # 2. Lógica de Pips / Puntos (Solo Forex y JPY para este servidor)
         if "JPY" in ticker:
             multiplier = 100
-        elif any(metal in ticker for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
-            multiplier = 10 
         else:
             multiplier = 10000
             
